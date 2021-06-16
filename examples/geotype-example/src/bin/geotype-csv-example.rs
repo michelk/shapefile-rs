@@ -9,7 +9,17 @@ use std::io;
 use std::io::{Read, Write};
 use std::process;
 
+// Command-Line Arguments
+
 /// Program to get the polygon-field-value for each point in the csv-file
+///
+/// The program
+/// 1. reads a polygon shapefile and point dataset in csv-Format
+/// 2. checks which polygon overlaps with the point
+/// 3. Adds the polygon-field-data to the point-dataset and updates the point
+///    field-data if field names are in polygon-shapefile _and_ point-csv-file
+/// 4. Writes point-csv-data with additional polygon field-values as output
+
 #[derive(Clap)]
 #[clap(setting = AppSettings::ColoredHelp)]
 struct Opts {
@@ -50,26 +60,34 @@ fn create_output_file(f: &String) -> File {
 }
 
 fn run(input: impl Read, output: impl Write, opts: &Opts) -> Result<(), Box<dyn Error>> {
+    // Read the polygon shapefile
     let polygons: Vec<(Polygon, dbase::Record)> =
         shapefile::read_as::<_, shapefile::Polygon, dbase::Record>(&opts.polygon_file)
             .expect("Could not open shapefile");
+
+    // Field delimiter of csv-file is specified on the command-line
     let sep = opts.sep.clone().into_bytes()[0];
+
+    // Specifies the csv-reader options
     let mut rdr = csv::ReaderBuilder::new()
         .delimiter(sep)
         .comment(Some(b'#'))
         .from_reader(input);
+
+    // Specifies the csv-reader options
     let mut wtr = csv::WriterBuilder::new().delimiter(sep).from_writer(output);
 
-    let mut last_matched_polygon: (geo::MultiPolygon<f64>, &dbase::Record) =
-        (polygons[0].0.clone().into(), &polygons[0].1);
+    // Cache the last matched polygon; initialize with the first polygon with (shape, data) tuple
+    let mut last_matched_polygon: (geo::MultiPolygon<f64>, dbase::Record) =
+        (polygons[0].0.clone().into(), polygons[0].1.clone());
 
-    let polygon_fields: &HashMap<String, dbase::FieldValue> = last_matched_polygon.1.as_ref();
+    let polygon_fields: HashMap<String, dbase::FieldValue> = last_matched_polygon.1.clone().into();
     let polygon_fieldnames: Vec<String> = polygon_fields.keys().cloned().collect();
 
     let point_fieldnames: Vec<String> = rdr.headers()?.into_iter().map(String::from).collect();
 
-    let new_header_vec = vec![point_fieldnames, polygon_fieldnames.clone()].concat();
-    let new_header = csv::StringRecord::from(new_header_vec);
+    let new_header_vec = vec![point_fieldnames.clone(), polygon_fieldnames.clone()].concat();
+    let new_header = csv::StringRecord::from(new_header_vec.clone());
 
     wtr.write_record(&new_header)?;
 
@@ -89,12 +107,19 @@ fn run(input: impl Read, output: impl Write, opts: &Opts) -> Result<(), Box<dyn 
                 .expect("Could not parse y coordinate as numeric"),
         );
         if last_matched_polygon.0.contains(&pt) {
+            merge_csv_and_polydata(
+                &csv_record,
+                &new_header_vec,
+                &point_fieldnames,
+                &polygon_fieldnames,
+                &last_matched_polygon.1,
+            );
             wtr.write_record(&csv_record)?;
         } else {
             for (polygon, polydata) in &polygons {
                 let geo_polygon: geo::MultiPolygon<f64> = polygon.clone().into();
                 if geo_polygon.contains(&pt) {
-                    last_matched_polygon = (geo_polygon, polydata);
+                    last_matched_polygon = (geo_polygon, polydata.clone());
 
                     wtr.write_record(&csv_record)?;
                     continue;
@@ -113,7 +138,7 @@ fn merge_csv_and_polydata(
     new_headers: &Vec<String>,
     csv_headers: &Vec<String>,
     poly_headers: &Vec<String>,
-    polydata: dbase::Record,
+    polydata: &dbase::Record,
 ) {
     for k in poly_headers {
         if csv_headers.contains(&k) {
