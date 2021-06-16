@@ -29,6 +29,9 @@ struct Opts {
     /// Field seperator of xyz-point file
     #[clap(short, long, default_value = " ")]
     sep: String,
+    /// Value in output for missing (non overlapping) data
+    #[clap(short, long, default_value = "NA")]
+    na: String,
     /// Optional output xyz-file else stdout
     #[clap(short, long)]
     output: Option<String>,
@@ -81,18 +84,35 @@ fn run(input: impl Read, output: impl Write, opts: &Opts) -> Result<(), Box<dyn 
     let mut last_matched_polygon: (geo::MultiPolygon<f64>, dbase::Record) =
         (polygons[0].0.clone().into(), polygons[0].1.clone());
 
-    let polygon_fields: HashMap<String, dbase::FieldValue> = last_matched_polygon.1.clone().into();
-    let polygon_fieldnames: Vec<String> = polygon_fields.keys().cloned().collect();
+    // Get Polygon-dataset fieldnames
+    let polygon_record_hashmap: HashMap<String, dbase::FieldValue> =
+        last_matched_polygon.1.clone().into();
+    let polygon_fieldnames: Vec<String> = polygon_record_hashmap.keys().cloned().collect();
 
+    // Get Point-dataset fieldnames
     let point_fieldnames: Vec<String> = rdr.headers()?.into_iter().map(String::from).collect();
 
-    let new_header_vec = vec![point_fieldnames.clone(), polygon_fieldnames.clone()].concat();
+    // New headerline of output dataset
+    //let new_header_vec = vec![point_fieldnames.clone(), polygon_fieldnames.clone()].concat();
+    let mut new_header_vec: Vec<String> = point_fieldnames.clone();
+    for k in &polygon_fieldnames {
+        if !&point_fieldnames.contains(k) {
+            new_header_vec.push(k.clone())
+        }
+    }
     let new_header = csv::StringRecord::from(new_header_vec.clone());
 
+    // Write header line to output
     wtr.write_record(&new_header)?;
 
+    // Iterate over csv-input points
     for result in rdr.records() {
         let mut csv_record: csv::StringRecord = result?;
+        for k in &new_header_vec {
+            if !point_fieldnames.contains(k) {
+                csv_record.push_field(&opts.na)
+            }
+        }
 
         let pt = geo::Point::<f64>::new(
             csv_record
