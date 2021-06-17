@@ -107,66 +107,88 @@ fn run(input: impl Read, output: impl Write, opts: &Opts) -> Result<(), Box<dyn 
 
     // Iterate over csv-input points
     for result in rdr.records() {
-        let mut csv_record: csv::StringRecord = result?;
-        for k in &new_header_vec {
-            if !point_fieldnames.contains(k) {
-                csv_record.push_field(&opts.na)
-            }
+        let csv_in_record: csv::StringRecord = result?;
+        // Create a HashMap with key-value pairs
+        let mut value_hash_map: HashMap<String, String> = HashMap::new();
+        for k in &point_fieldnames {
+            let v = get_value_from_string_record(&csv_in_record, &point_fieldnames, &k)
+                .unwrap()
+                .to_string();
+            value_hash_map.insert(k.to_string(), v);
+        }
+
+        for k in &polygon_fieldnames {
+            value_hash_map.insert(k.to_string(), opts.na.clone());
         }
 
         let pt = geo::Point::<f64>::new(
-            csv_record
+            csv_in_record
                 .get(0)
                 .expect("Could not read first point-dataset column")
                 .parse()
                 .expect("Could not parse x coordinate as numeric"),
-            csv_record
+            csv_in_record
                 .get(1)
                 .expect("Could not read second point-dataset column")
                 .parse()
                 .expect("Could not parse y coordinate as numeric"),
         );
         if last_matched_polygon.0.contains(&pt) {
-            merge_csv_and_polydata(
-                &csv_record,
-                &new_header_vec,
-                &point_fieldnames,
+            update_value_hash_map(
+                &mut value_hash_map,
                 &polygon_fieldnames,
                 &last_matched_polygon.1,
+                &opts.na,
             );
-            wtr.write_record(&csv_record)?;
         } else {
             for (polygon, polydata) in &polygons {
                 let geo_polygon: geo::MultiPolygon<f64> = polygon.clone().into();
                 if geo_polygon.contains(&pt) {
                     last_matched_polygon = (geo_polygon, polydata.clone());
-
-                    wtr.write_record(&csv_record)?;
-                    continue;
-                } else {
-                    wtr.write_record(&csv_record)?;
+                    update_value_hash_map(
+                        &mut value_hash_map,
+                        &polygon_fieldnames,
+                        &last_matched_polygon.1,
+                        &opts.na,
+                    );
+                    break;
                 }
             }
         }
+        let csv_out_record_vec: Vec<String> = new_header_vec
+            .iter()
+            .map(|k| value_hash_map.get(k).unwrap().clone())
+            .collect();
+        let csv_out_record: csv::StringRecord = csv::StringRecord::from(csv_out_record_vec);
+        wtr.write_record(&csv_out_record)?;
     }
     wtr.flush()?;
     Ok(())
 }
 
-fn merge_csv_and_polydata(
-    mut record: &csv::StringRecord,
-    new_headers: &Vec<String>,
-    csv_headers: &Vec<String>,
-    poly_headers: &Vec<String>,
-    polydata: &dbase::Record,
-) {
-    for k in poly_headers {
-        if csv_headers.contains(&k) {
-            let i_of_new_headers = new_headers.iter().position(|x| x == k).unwrap();
-            let v_of_polydata = polydata.get(&k).unwrap();
-            unimplemented!()
-        } else {
-            unimplemented!()
-        }
+fn get_fieldvalue_as_string(r: &dbase::Record, k: &String, na_str: &String) -> String {
+    match r.get(k) {
+        Some(dbase::FieldValue::Character(Some(s))) => s.clone(),
+        Some(dbase::FieldValue::Numeric(Some(f))) => format!("{}", f),
+        _ => na_str.clone(),
     }
+}
+
+fn update_value_hash_map(
+    value_hash_map: &mut HashMap<String, String>,
+    polygon_fieldnames: &Vec<String>,
+    polygon: &dbase::Record,
+    na_str: &String,
+) {
+    for k in polygon_fieldnames {
+        value_hash_map.insert(k.to_string(), get_fieldvalue_as_string(polygon, k, na_str));
+    }
+}
+fn get_value_from_string_record<'a>(
+    r: &'a csv::StringRecord,
+    record_names: &Vec<String>,
+    x: &String,
+) -> Option<&'a str> {
+    let i = record_names.iter().position(|e| e == x)?;
+    r.get(i)
 }
